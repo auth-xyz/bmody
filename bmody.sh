@@ -2,14 +2,18 @@
 
 # Balatro Linux Modding Setup Script
 # Sets up Steamodded and Lovely Injector for Balatro modding
+# Now supports individual mod installation with --mod flag
 
 set -e  # Exit on error
 
 STEAM_MODDED="https://github.com/Steamodded/smods/releases/latest"
 LOVELY="https://github.com/ethangreen-dev/lovely-injector/releases/latest"
 BALATRO_PATH=""
+BALATRO_SAVE_PATH=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEMP_DIR="/tmp/balatro_modding_$$"
+MOD_MODE=false
+MOD_PATHS=()
 
 # Colors for output
 RED='\033[0;31m'
@@ -35,6 +39,49 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Show usage information
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo
+    echo "Options:"
+    echo "  --mod PATH        Install a mod from PATH (supports .zip, .rar, .tar.gz, .7z)"
+    echo "                    Can be used multiple times to install multiple mods"
+    echo "  -h, --help        Show this help message"
+    echo
+    echo "Examples:"
+    echo "  $0                           # Run interactive setup"
+    echo "  $0 --mod mod1.zip            # Install a single mod"
+    echo "  $0 --mod mod1.zip --mod mod2.rar --mod mod3.tar.gz  # Install multiple mods"
+    echo
+    echo "Supported archive formats: .zip, .rar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .7z"
+}
+
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --mod)
+                if [[ -z "$2" ]]; then
+                    log_error "--mod requires a path argument"
+                    exit 1
+                fi
+                MOD_PATHS+=("$2")
+                MOD_MODE=true
+                shift 2
+                ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
+    done
+}
+
 # Cleanup function
 cleanup() {
     if [[ -d "$TEMP_DIR" ]]; then
@@ -46,10 +93,24 @@ trap cleanup EXIT
 # Check if required tools are installed
 check_dependencies() {
     local missing_deps=()
+    local missing_extractors=()
     
+    # Basic dependencies
     command -v curl >/dev/null 2>&1 || missing_deps+=("curl")
     command -v jq >/dev/null 2>&1 || missing_deps+=("jq")
-    command -v unzip >/dev/null 2>&1 || missing_deps+=("unzip")
+    
+    # Archive extraction tools
+    command -v unzip >/dev/null 2>&1 || missing_extractors+=("unzip")
+    command -v tar >/dev/null 2>&1 || missing_extractors+=("tar")
+    
+    # Optional but recommended for additional formats
+    if ! command -v unrar >/dev/null 2>&1 && ! command -v rar >/dev/null 2>&1; then
+        missing_extractors+=("unrar")
+    fi
+    
+    if ! command -v 7z >/dev/null 2>&1 && ! command -v 7za >/dev/null 2>&1; then
+        missing_extractors+=("p7zip-full")
+    fi
     
     if [[ ${#missing_deps[@]} -ne 0 ]]; then
         log_error "Missing required dependencies: ${missing_deps[*]}"
@@ -58,6 +119,202 @@ check_dependencies() {
         log_info "Fedora: sudo dnf install ${missing_deps[*]}"
         log_info "Arch: sudo pacman -S ${missing_deps[*]}"
         exit 1
+    fi
+    
+    if [[ ${#missing_extractors[@]} -ne 0 ]]; then
+        log_warning "Some archive extractors are missing: ${missing_extractors[*]}"
+        log_info "Install them for full format support:"
+        log_info "Ubuntu/Debian: sudo apt install ${missing_extractors[*]}"
+        log_info "Fedora: sudo dnf install ${missing_extractors[*]}"
+        log_info "Arch: sudo pacman -S ${missing_extractors[*]}"
+        echo
+    fi
+}
+
+# Extract archive based on file extension
+extract_archive() {
+    local archive_path="$1"
+    local dest_dir="$2"
+    local filename=$(basename "$archive_path")
+    local extension="${filename##*.}"
+    
+    log_info "Extracting $filename..."
+    
+    case "${filename,,}" in
+        *.zip)
+            if command -v unzip >/dev/null 2>&1; then
+                unzip -q "$archive_path" -d "$dest_dir"
+            else
+                log_error "unzip not found. Please install unzip to extract .zip files"
+                return 1
+            fi
+            ;;
+        *.rar)
+            if command -v unrar >/dev/null 2>&1; then
+                unrar x -y "$archive_path" "$dest_dir/"
+            elif command -v rar >/dev/null 2>&1; then
+                rar x -y "$archive_path" "$dest_dir/"
+            else
+                log_error "unrar not found. Please install unrar to extract .rar files"
+                return 1
+            fi
+            ;;
+        *.tar.gz|*.tgz)
+            if command -v tar >/dev/null 2>&1; then
+                tar -xzf "$archive_path" -C "$dest_dir"
+            else
+                log_error "tar not found. Please install tar to extract .tar.gz files"
+                return 1
+            fi
+            ;;
+        *.tar.bz2|*.tbz2)
+            if command -v tar >/dev/null 2>&1; then
+                tar -xjf "$archive_path" -C "$dest_dir"
+            else
+                log_error "tar not found. Please install tar to extract .tar.bz2 files"
+                return 1
+            fi
+            ;;
+        *.tar.xz|*.txz)
+            if command -v tar >/dev/null 2>&1; then
+                tar -xJf "$archive_path" -C "$dest_dir"
+            else
+                log_error "tar not found. Please install tar to extract .tar.xz files"
+                return 1
+            fi
+            ;;
+        *.7z)
+            if command -v 7z >/dev/null 2>&1; then
+                7z x "$archive_path" -o"$dest_dir" -y
+            elif command -v 7za >/dev/null 2>&1; then
+                7za x "$archive_path" -o"$dest_dir" -y
+            else
+                log_error "7z not found. Please install p7zip-full to extract .7z files"
+                return 1
+            fi
+            ;;
+        *)
+            log_error "Unsupported archive format: $filename"
+            log_info "Supported formats: .zip, .rar, .tar.gz, .tgz, .tar.bz2, .tar.xz, .7z"
+            return 1
+            ;;
+    esac
+    
+    log_success "Extracted $filename"
+}
+
+# Install individual mod files
+install_individual_mods() {
+    log_info "Installing individual mods..."
+    
+    # Ensure save directory exists
+    if [[ -z "$BALATRO_SAVE_PATH" ]]; then
+        determine_save_directory
+    fi
+    
+    mkdir -p "$BALATRO_SAVE_PATH/Mods"
+    
+    local installed_count=0
+    
+    for mod_path in "${MOD_PATHS[@]}"; do
+        if [[ ! -f "$mod_path" ]]; then
+            log_error "Mod file not found: $mod_path"
+            continue
+        fi
+        
+        log_info "Processing mod: $(basename "$mod_path")"
+        
+        # Create temporary extraction directory for this mod
+        local mod_temp_dir="$TEMP_DIR/mod_$(basename "$mod_path" | sed 's/[^a-zA-Z0-9]/_/g')"
+        mkdir -p "$mod_temp_dir"
+        
+        # Extract the mod
+        if ! extract_archive "$mod_path" "$mod_temp_dir"; then
+            log_error "Failed to extract $mod_path"
+            continue
+        fi
+        
+        # Find and install mod content
+        install_mod_content "$mod_temp_dir" "$(basename "$mod_path")"
+        ((installed_count++))
+    done
+    
+    if [[ $installed_count -gt 0 ]]; then
+        log_success "Successfully installed $installed_count mod(s)!"
+    else
+        log_error "No mods were installed successfully"
+        exit 1
+    fi
+}
+
+# Install mod content from extracted directory
+install_mod_content() {
+    local extracted_dir="$1"
+    local mod_name="$2"
+    local base_name=$(basename "$mod_name" | sed 's/\.[^.]*$//')  # Remove extension
+    
+    # Look for .lua files or mod directories
+    local lua_files=($(find "$extracted_dir" -name "*.lua" -type f))
+    local mod_dirs=($(find "$extracted_dir" -type d -name "*" | grep -v "^$extracted_dir$" | head -10))
+    
+    if [[ ${#lua_files[@]} -gt 0 ]]; then
+        # Found lua files - this is likely a mod
+        local mod_install_dir="$BALATRO_SAVE_PATH/Mods/$base_name"
+        
+        # Remove existing installation if it exists
+        if [[ -d "$mod_install_dir" ]]; then
+            log_info "Removing existing installation of $base_name..."
+            rm -rf "$mod_install_dir"
+        fi
+        
+        # Check if there's a single subdirectory containing the mod
+        local subdirs=($(find "$extracted_dir" -maxdepth 1 -type d | grep -v "^$extracted_dir$"))
+        
+        if [[ ${#subdirs[@]} -eq 1 ]] && [[ -d "${subdirs[0]}" ]]; then
+            # Single subdirectory - likely the mod folder
+            local subdir="${subdirs[0]}"
+            local subdir_lua_files=($(find "$subdir" -name "*.lua" -type f))
+            
+            if [[ ${#subdir_lua_files[@]} -gt 0 ]]; then
+                # Copy the subdirectory as the mod
+                cp -r "$subdir" "$mod_install_dir"
+                log_success "Installed mod: $base_name (from subdirectory)"
+                return 0
+            fi
+        fi
+        
+        # Copy all contents to mod directory
+        mkdir -p "$mod_install_dir"
+        cp -r "$extracted_dir"/* "$mod_install_dir"/
+        log_success "Installed mod: $base_name"
+        
+    elif [[ ${#mod_dirs[@]} -gt 0 ]]; then
+        # Look for directories that might contain mods
+        local installed_any=false
+        
+        for dir in "${mod_dirs[@]}"; do
+            local dir_lua_files=($(find "$dir" -name "*.lua" -type f))
+            if [[ ${#dir_lua_files[@]} -gt 0 ]]; then
+                local dir_name=$(basename "$dir")
+                local mod_install_dir="$BALATRO_SAVE_PATH/Mods/$dir_name"
+                
+                # Remove existing installation if it exists
+                if [[ -d "$mod_install_dir" ]]; then
+                    log_info "Removing existing installation of $dir_name..."
+                    rm -rf "$mod_install_dir"
+                fi
+                
+                cp -r "$dir" "$BALATRO_SAVE_PATH/Mods/"
+                log_success "Installed mod: $dir_name"
+                installed_any=true
+            fi
+        done
+        
+        if [[ "$installed_any" = false ]]; then
+            log_warning "No .lua files found in $mod_name - this might not be a valid mod"
+        fi
+    else
+        log_warning "No .lua files found in $mod_name - this might not be a valid mod"
     fi
 }
 
@@ -335,16 +592,47 @@ check_launch_options() {
     log_warning "The mods will NOT work without these launch options!"
     echo
     
-    read -p "Press Enter when you have set the launch options (or press Ctrl+C to exit)..."
+    if [[ "$MOD_MODE" = false ]]; then
+        read -p "Press Enter when you have set the launch options (or press Ctrl+C to exit)..."
+    fi
 }
 
 # Main execution
 main() {
-    echo
-    log_info "Starting Balatro Linux Modding Setup..."
+    # Parse command line arguments
+    parse_args "$@"
     
     # Check dependencies
     check_dependencies
+    
+    # Handle mod installation mode
+    if [[ "$MOD_MODE" = true ]]; then
+        echo
+        log_info "Installing individual mods..."
+        
+        # Find Balatro installation (needed for save directory)
+        find_gaben
+        
+        # Create temp directory
+        mkdir -p "$TEMP_DIR"
+        
+        # Install the individual mods
+        install_individual_mods
+        
+        echo
+        log_success "=========================================="
+        log_success "Individual mod installation complete!"
+        log_success "=========================================="
+        echo
+        log_info "Installed mods in: $BALATRO_SAVE_PATH/Mods/"
+        echo
+        log_info "Launch Balatro through Steam to use your mods!"
+        return 0
+    fi
+    
+    # Regular interactive mode
+    echo
+    log_info "Starting Balatro Linux Modding Setup..."
     
     # Find Balatro installation
     find_gaben
@@ -379,8 +667,8 @@ main() {
     log_info "Launch Options: WINEDLLOVERRIDES=\"version=n,b\" %command%"
     echo
     log_info "To add more mods:"
-    log_info "  1. Download .lua mod files or mod folders"
-    log_info "  2. Place them in: $BALATRO_SAVE_PATH/Mods/"
+    log_info "  1. Use: $0 --mod path/to/mod.zip"
+    log_info "  2. Or manually place .lua files/folders in: $BALATRO_SAVE_PATH/Mods/"
     log_info "  3. Launch Balatro through Steam"
     echo
     log_info "Troubleshooting:"
